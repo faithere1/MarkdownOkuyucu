@@ -25,7 +25,7 @@ Single Swift file · No dependencies to install · Under 1 MB
 Requires macOS 12+ and the Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
-git clone https://github.com/<your-username>/MarkdownOkuyucu.git
+git clone https://github.com/faithere1/MarkdownOkuyucu.git
 cd MarkdownOkuyucu
 ./build.sh
 ```
