@@ -46,3 +46,7 @@ To make it your default, right-click any `.md` file → **Get Info** → **Open 
 ## Built with
 
 [marked](https://github.com/markedjs/marked) · [DOMPurify](https://github.com/cure53/DOMPurify) · [highlight.js](https://highlightjs.org) · [github-markdown-css](https://github.com/sindresorhus/github-markdown-css)
+
+## License
+
+[MIT](LICENSE)
