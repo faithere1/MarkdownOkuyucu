@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<base id="base">
+<link rel="stylesheet" href="github-markdown.css">
+<link rel="stylesheet" href="hl-light.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="hl-dark.css" media="(prefers-color-scheme: dark)">
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; background: #ffffff; }
+  @media (prefers-color-scheme: dark) { html, body { background: #0d1117; } }
+  .markdown-body { box-sizing: border-box; max-width: 980px; margin: 0 auto; padding: 40px 48px 80px; }
+  @media (max-width: 767px) { .markdown-body { padding: 20px 16px 60px; } }
+  .markdown-body pre code.hljs { background: transparent; padding: 0; }
+  .empty { color: #8b949e; font-style: italic; }
+</style>
+<script src="marked.min.js"></script>
+<script src="purify.min.js"></script>
+<script src="highlight.min.js"></script>
+</head>
+<body>
+<article id="content" class="markdown-body"></article>
+<script>
+  let slugCounts = {};
+  function slug(raw) {
+    let s = raw.toLowerCase().trim()
+      .replace(/<[^>]*>/g, '')
+      .replace(/[^\p{L}\p{N}\s-]/gu, '')
+      .replace(/\s/g, '-');
+    if (slugCounts[s] !== undefined) { slugCounts[s] += 1; s = s + '-' + slugCounts[s]; }
+    else { slugCounts[s] = 0; }
+    return s;
+  }
+  marked.use({
+    gfm: true,
+    renderer: {
+      heading(text, level, raw) {
+        return `<h${level} id="${slug(raw)}">${text}</h${level}>\n`;
+      }
+    }
+  });
+
+  function render(md, baseHref) {
+    document.getElementById('base').setAttribute('href', baseHref || '');
+    slugCounts = {};
+    const el = document.getElementById('content');
+    if (!md.trim()) {
+      el.innerHTML = '<p class="empty">Boş belge. Yazmak için Düzenle moduna geçin (⌘2 veya ⌘3).</p>';
+      return;
+    }
+    el.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['id'] });
+    el.querySelectorAll('pre code[class*="language-"]').forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
+  }
+
+  // <base> points at the file's folder, so in-page anchors must be handled here.
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href^="#"]');
+    if (!a) return;
+    e.preventDefault();
+    const t = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+    if (t) t.scrollIntoView();
+  });
+
+  function scrollToRatio(r) {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    window.scrollTo(0, Math.max(0, max * r));
+  }
+</script>
+</body>
+</html>
