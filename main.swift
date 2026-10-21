@@ -53,12 +53,19 @@ final class MarkdownDocument: NSDocument {
 
 // MARK: - Pencere içeriği (düzenleyici + önizleme)
 
-final class DocViewController: NSViewController, NSTextViewDelegate, WKNavigationDelegate, NSToolbarDelegate {
+final class DocViewController: NSViewController, NSTextViewDelegate, NSSearchFieldDelegate, WKNavigationDelegate, NSToolbarDelegate {
     private weak var doc: MarkdownDocument?
     private let split = NSSplitView()
     private let editorScroll = NSTextView.scrollableTextView()
     private var textView: NSTextView { editorScroll.documentView as! NSTextView }
+    private let previewPane = NSView()
     private let web: WKWebView
+    private let findBar = NSView()
+    private let findField = NSSearchField()
+    private let findStatus = NSTextField(labelWithString: "")
+    private var webTopToPane: NSLayoutConstraint!
+    private var webTopToBar: NSLayoutConstraint!
+    private var lastQuery = ""
     private var pageLoaded = false
     private var renderPending = false
     private var renderWork: DispatchWorkItem?
@@ -105,8 +112,49 @@ final class DocViewController: NSViewController, NSTextViewDelegate, WKNavigatio
         web.navigationDelegate = self
         web.setValue(false, forKey: "drawsBackground")
 
+        // Önizleme arama çubuğu
+        findField.placeholderString = "Önizlemede ara"
+        findField.sendsSearchStringImmediately = true
+        findField.target = self
+        findField.action = #selector(findFieldChanged(_:))
+        findField.delegate = self
+        findField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        findStatus.textColor = .secondaryLabelColor
+        findStatus.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        let nav = NSSegmentedControl(
+            images: [NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Önceki")!,
+                     NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Sonraki")!],
+            trackingMode: .momentary, target: self, action: #selector(findNavClicked(_:)))
+        let done = NSButton(title: "Bitti", target: self, action: #selector(closeFindBar(_:)))
+        let row = NSStackView(views: [findField, findStatus, nav, done])
+        row.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        let sep = NSBox()
+        sep.boxType = .separator
+        for v in [row, sep] { v.translatesAutoresizingMaskIntoConstraints = false; findBar.addSubview(v) }
+        findBar.isHidden = true
+
+        for v in [findBar, web] { v.translatesAutoresizingMaskIntoConstraints = false; previewPane.addSubview(v) }
+        webTopToPane = web.topAnchor.constraint(equalTo: previewPane.topAnchor)
+        webTopToBar = web.topAnchor.constraint(equalTo: findBar.bottomAnchor)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: findBar.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: findBar.trailingAnchor),
+            row.topAnchor.constraint(equalTo: findBar.topAnchor),
+            sep.topAnchor.constraint(equalTo: row.bottomAnchor),
+            sep.leadingAnchor.constraint(equalTo: findBar.leadingAnchor),
+            sep.trailingAnchor.constraint(equalTo: findBar.trailingAnchor),
+            sep.bottomAnchor.constraint(equalTo: findBar.bottomAnchor),
+            findBar.leadingAnchor.constraint(equalTo: previewPane.leadingAnchor),
+            findBar.trailingAnchor.constraint(equalTo: previewPane.trailingAnchor),
+            findBar.topAnchor.constraint(equalTo: previewPane.topAnchor),
+            web.leadingAnchor.constraint(equalTo: previewPane.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: previewPane.trailingAnchor),
+            web.bottomAnchor.constraint(equalTo: previewPane.bottomAnchor),
+            webTopToPane,
+        ])
+
         split.addArrangedSubview(editorScroll)
-        split.addArrangedSubview(web)
+        split.addArrangedSubview(previewPane)
 
         let root = NSView()
         root.addSubview(split)
@@ -152,7 +200,8 @@ final class DocViewController: NSViewController, NSTextViewDelegate, WKNavigatio
 
     private func applyMode() {
         editorScroll.isHidden = (mode == .read)
-        web.isHidden = (mode == .edit)
+        previewPane.isHidden = (mode == .edit)
+        if mode == .edit { closeFindBar(nil) }
         split.adjustSubviews()
         if mode == .split, split.bounds.width > 0 {
             split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
@@ -207,7 +256,97 @@ final class DocViewController: NSViewController, NSTextViewDelegate, WKNavigatio
         let base = doc?.fileURL?.deletingLastPathComponent().absoluteString ?? ""
         guard let data = try? JSONEncoder().encode([textView.string, base]),
               let json = String(data: data, encoding: .utf8) else { return }
-        web.evaluateJavaScript("render(...\(json))", completionHandler: nil)
+        web.evaluateJavaScript("render(...\(json))") { [weak self] r, _ in
+            if let self, !self.lastQuery.isEmpty { self.showFindStatus(r) }
+        }
+    }
+
+    // MARK: Bul
+
+    /// Odak düzenleyicideyse metin görünümünün kendi arama çubuğu kullanılır.
+    private var editorHasFocus: Bool {
+        switch mode {
+        case .edit: return true
+        case .read: return false
+        case .split:
+            guard let r = view.window?.firstResponder as? NSView else { return false }
+            return r.isDescendant(of: editorScroll)
+        }
+    }
+
+    @objc func performFind(_ sender: NSMenuItem) {
+        if editorHasFocus { textView.performFindPanelAction(sender); return }
+        switch NSFindPanelAction(rawValue: UInt(sender.tag)) {
+        case .next?: findStep(1)
+        case .previous?: findStep(-1)
+        default: openFindBar()
+        }
+    }
+
+    private func openFindBar() {
+        if findBar.isHidden {
+            findBar.isHidden = false
+            webTopToPane.isActive = false
+            webTopToBar.isActive = true
+            if !findField.stringValue.isEmpty { runFind() }
+        }
+        view.window?.makeFirstResponder(findField)
+        findField.currentEditor()?.selectAll(nil)
+    }
+
+    @objc func closeFindBar(_ sender: Any?) {
+        guard !findBar.isHidden else { return }
+        findBar.isHidden = true
+        webTopToBar.isActive = false
+        webTopToPane.isActive = true
+        lastQuery = ""
+        if pageLoaded { web.evaluateJavaScript("findAll('')", completionHandler: nil) }
+        view.window?.makeFirstResponder(mode == .read ? web : textView)
+    }
+
+    override func cancelOperation(_ sender: Any?) { closeFindBar(sender) }
+
+    @objc private func findFieldChanged(_ sender: NSSearchField) {
+        guard sender.stringValue != lastQuery else { return }
+        runFind()
+    }
+
+    @objc private func findNavClicked(_ sender: NSSegmentedControl) {
+        findStep(sender.selectedSegment == 0 ? -1 : 1)
+    }
+
+    private func runFind() {
+        lastQuery = findField.stringValue
+        guard pageLoaded, let data = try? JSONEncoder().encode([lastQuery]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        web.evaluateJavaScript("findAll(...\(json))") { [weak self] r, _ in self?.showFindStatus(r) }
+    }
+
+    private func findStep(_ d: Int) {
+        guard !findBar.isHidden else { openFindBar(); return }
+        guard findField.stringValue == lastQuery else { runFind(); return }
+        guard pageLoaded else { return }
+        web.evaluateJavaScript("findStep(\(d))") { [weak self] r, _ in self?.showFindStatus(r) }
+    }
+
+    /// JS'ten gelen [geçerli, toplam] bilgisini gösterir.
+    private func showFindStatus(_ r: Any?) {
+        let v = (r as? [NSNumber])?.map(\.intValue) ?? [0, 0]
+        findStatus.stringValue = lastQuery.isEmpty ? "" : v[1] == 0 ? "Bulunamadı" : "\(v[0])/\(v[1])"
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        guard control === findField else { return false }
+        switch sel {
+        case #selector(NSResponder.insertNewline(_:)):
+            findStep(NSApp.currentEvent?.modifierFlags.contains(.shift) == true ? -1 : 1)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            closeFindBar(nil)
+            return true
+        default:
+            return false
+        }
     }
 
     @objc private func editorScrolled() {
@@ -346,12 +485,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(edit, "Yapıştır", #selector(NSText.paste(_:)), "v")
         add(edit, "Tümünü Seç", #selector(NSText.selectAll(_:)), "a")
         edit.addItem(.separator())
-        let find = NSMenuItem(title: "Bul…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
-        find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
-        edit.addItem(find)
-        let next = NSMenuItem(title: "Sonrakini Bul", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
-        next.tag = Int(NSFindPanelAction.next.rawValue)
-        edit.addItem(next)
+        // Odaklı görünüme göre düzenleyicide veya önizlemede arar.
+        func addFind(_ title: String, _ key: String, _ action: NSFindPanelAction,
+                     _ mods: NSEvent.ModifierFlags = .command) {
+            let item = NSMenuItem(title: title, action: #selector(DocViewController.performFind(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.tag = Int(action.rawValue)
+            edit.addItem(item)
+        }
+        addFind("Bul…", "f", .showFindPanel)
+        addFind("Sonrakini Bul", "g", .next)
+        addFind("Öncekini Bul", "g", .previous, [.command, .shift])
 
         let view = submenu("Görünüm")
         add(view, "Okuma Modu", #selector(DocViewController.modeRead(_:)), "1")

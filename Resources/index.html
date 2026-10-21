@@ -14,6 +14,9 @@
   @media (max-width: 767px) { .markdown-body { padding: 20px 16px 60px; } }
   .markdown-body pre code.hljs { background: transparent; padding: 0; }
   .empty { color: #8b949e; font-style: italic; }
+  mark.find-hit { background: #fff0a0; color: inherit; border-radius: 2px; }
+  mark.find-hit.current { background: #ff9632; color: #000; }
+  @media (prefers-color-scheme: dark) { mark.find-hit { background: #6b5a1f; } }
 </style>
 <script src="marked.min.js"></script>
 <script src="purify.min.js"></script>
@@ -45,12 +48,72 @@
     document.getElementById('base').setAttribute('href', baseHref || '');
     slugCounts = {};
     const el = document.getElementById('content');
+    findHits = [];
     if (!md.trim()) {
       el.innerHTML = '<p class="empty">Boş belge. Yazmak için Düzenle moduna geçin (⌘2 veya ⌘3).</p>';
-      return;
+      findIdx = -1;
+      return findState();
     }
     el.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['id'] });
     el.querySelectorAll('pre code[class*="language-"]').forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
+    // Arama açıksa yeniden işaretle, konumu koru ama kaydırma.
+    if (findQuery) {
+      highlight(findQuery);
+      findIdx = Math.min(Math.max(findIdx, 0), findHits.length - 1);
+      showCurrent(false);
+    }
+    return findState();
+  }
+
+  // Önizlemede bul
+  let findQuery = '', findHits = [], findIdx = -1;
+
+  function findState() { return [findIdx + 1, findHits.length]; }
+
+  function highlight(q) {
+    findHits = [];
+    if (!q) return;
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
+    const walker = document.createTreeWalker(document.getElementById('content'), NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      const text = node.nodeValue;
+      const frag = document.createDocumentFragment();
+      let m, last = 0;
+      re.lastIndex = 0;
+      while ((m = re.exec(text))) {
+        frag.append(text.slice(last, m.index));
+        const mark = document.createElement('mark');
+        mark.className = 'find-hit';
+        mark.textContent = m[0];
+        frag.append(mark);
+        findHits.push(mark);
+        last = m.index + m[0].length;
+      }
+      if (last > 0) { frag.append(text.slice(last)); node.replaceWith(frag); }
+    }
+  }
+
+  function findAll(q) {
+    document.querySelectorAll('mark.find-hit').forEach(m => m.replaceWith(m.textContent));
+    document.getElementById('content').normalize();
+    findQuery = q;
+    highlight(q);
+    findIdx = findHits.length ? 0 : -1;
+    showCurrent(true);
+    return findState();
+  }
+
+  function findStep(d) {
+    const n = findHits.length;
+    if (n) { findIdx = (findIdx + d + n) % n; showCurrent(true); }
+    return findState();
+  }
+
+  function showCurrent(scroll) {
+    findHits.forEach((m, i) => m.classList.toggle('current', i === findIdx));
+    if (scroll && findIdx >= 0) findHits[findIdx].scrollIntoView({ block: 'center' });
   }
 
   // <base> points at the file's folder, so in-page anchors must be handled here.
